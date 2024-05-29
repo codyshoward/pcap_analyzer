@@ -1,3 +1,7 @@
+// Package main provides a comprehensive tool for analyzing PCAP files, extracting various network metrics,
+// and summarizing the results in a detailed analysis report. The tool also supports zipping the generated
+// analysis files and deleting the original files after they are added to the zip.
+
 package main
 
 import (
@@ -20,6 +24,7 @@ import (
 	"github.com/sqweek/dialog"
 )
 
+// tcpConnectionKey represents a unique TCP connection based on source and destination IPs and ports.
 type tcpConnectionKey struct {
 	srcIP   string
 	dstIP   string
@@ -27,6 +32,7 @@ type tcpConnectionKey struct {
 	dstPort layers.TCPPort
 }
 
+// tcpConnectionData holds details of a TCP connection, including retransmissions and sequence numbers.
 type tcpConnectionData struct {
 	srcPort         layers.TCPPort
 	dstPort         layers.TCPPort
@@ -34,6 +40,7 @@ type tcpConnectionData struct {
 	retransmissions int // Count retransmissions
 }
 
+// packetDetail stores information about individual packets.
 type packetDetail struct {
 	timestamp        time.Time
 	seqNum           uint32
@@ -47,6 +54,7 @@ type packetDetail struct {
 	dstPort          layers.TCPPort
 }
 
+// tcpSessionKey represents a unique TCP session based on source and destination IPs and ports.
 type tcpSessionKey struct {
 	srcIP   string
 	dstIP   string
@@ -54,6 +62,7 @@ type tcpSessionKey struct {
 	dstPort layers.TCPPort
 }
 
+// latencyInfo stores latency information between two hosts.
 type latencyInfo struct {
 	srcIP   string
 	dstIP   string
@@ -62,6 +71,7 @@ type latencyInfo struct {
 	latency time.Duration
 }
 
+// latencyCategory categorizes latency data into three categories.
 type latencyCategory struct {
 	below60ms         int
 	between60And100ms int
@@ -69,36 +79,42 @@ type latencyCategory struct {
 	total             int
 }
 
+// handshakeFailureInfo holds information about handshake failures.
 type handshakeFailureInfo struct {
 	identifier string
 	count      int
 	dstPort    layers.TCPPort
 }
 
+// connectionBreakInfo holds information about connection breaks.
 type connectionBreakInfo struct {
 	identifier string
 	count      int
 	dstPort    layers.TCPPort
 }
 
+// rttInfo stores round-trip time information between two hosts.
 type rttInfo struct {
 	srcIP string
 	dstIP string
 	rtt   time.Duration
 }
 
+// dnsQuery represents a DNS query with its timestamp and ID.
 type dnsQuery struct {
 	timestamp time.Time
 	id        uint16
 	query     string
 }
 
+// dnsResponse represents a DNS response with its timestamp and ID.
 type dnsResponse struct {
 	timestamp time.Time
 	id        uint16
 	response  string
 }
 
+// dnsDelayInfo stores information about DNS query-response delay.
 type dnsDelayInfo struct {
 	query     string
 	srcIP     string
@@ -108,6 +124,7 @@ type dnsDelayInfo struct {
 	delay     time.Duration
 }
 
+// errorMessage represents an error message detected in the traffic.
 type errorMessage struct {
 	srcIP     string
 	dstIP     string
@@ -115,6 +132,7 @@ type errorMessage struct {
 	count     int
 }
 
+// jitterInfo holds information about the jitter in packet arrivals.
 type jitterInfo struct {
 	identifier string
 	srcPort    layers.TCPPort
@@ -122,6 +140,7 @@ type jitterInfo struct {
 	avgJitter  time.Duration
 }
 
+// throughputInfo stores throughput information between two hosts.
 type throughputInfo struct {
 	identifier string
 	srcPort    layers.TCPPort
@@ -129,6 +148,7 @@ type throughputInfo struct {
 	throughput float64 // in bytes per second
 }
 
+// duplicateAckInfo holds information about duplicate ACKs detected.
 type duplicateAckInfo struct {
 	identifier string
 	srcPort    layers.TCPPort
@@ -136,6 +156,7 @@ type duplicateAckInfo struct {
 	dupAcks    int
 }
 
+// windowSizeInfo holds information about TCP window sizes.
 type windowSizeInfo struct {
 	identifier      string
 	srcPort         layers.TCPPort
@@ -147,6 +168,7 @@ type windowSizeInfo struct {
 	deltaPercentage float64
 }
 
+// fragmentationInfo stores information about packet fragmentation.
 type fragmentationInfo struct {
 	identifier    string
 	srcPort       layers.TCPPort
@@ -154,6 +176,7 @@ type fragmentationInfo struct {
 	fragmentCount int
 }
 
+// Global variables to hold various metrics and data.
 var dnsQueries = make(map[uint16]dnsQuery)
 var dnsDelays = []dnsDelayInfo{}
 var errorMessages = make(map[string]map[string]int)
@@ -173,6 +196,9 @@ var suspectScores = make(map[string]int)
 var metricContributions = make(map[string]map[string]int)
 var rawMetrics = make(map[string]map[string]interface{})
 
+
+// main is the entry point of the application. It sets up logging, opens a file selection dialog,
+// processes the selected PCAP file, writes various analysis results to files, and generates a summary report.
 func main() {
 	// Open output.log file
 	logFile, err := os.OpenFile("output.log", os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0666)
@@ -195,31 +221,46 @@ func main() {
 
 	log.Printf("Analyzing the selected pcap file: %s\n", selectedFile)
 	timestamp := time.Now().Format("20060102_150405")
+
+	// Process the selected PCAP file for transactions
 	handlePcapTrns(selectedFile)
+	
+	// Process the selected PCAP file for latency
 	handlePcapLat(selectedFile)
 
 	// Write retransmission data to a file with a timestamp
 	writeRetransmissionTable(timestamp)
+	
 	// Write latency percentages to a file with a timestamp
 	writeLatencyPercentages(timestamp)
+	
 	// Write handshake failures and connection breaks to a file
 	writeHandshakeFailuresAndConnectionBreaks(timestamp)
+	
 	// Write RTT data to a file with a timestamp
 	writeRTTData(timestamp)
+	
 	// Calculate and write jitter to a file with a timestamp
 	calculateJitter(timestamp)
+	
 	// Calculate and write throughput to a file with a timestamp
 	calculateThroughput(timestamp)
+	
 	// Calculate and write duplicate ACKs to a file with a timestamp
 	calculateDuplicateAcks(timestamp)
+	
 	// Calculate and write window size statistics to a file with a timestamp
 	calculateWindowSizeStatistics(timestamp)
+	
 	// Calculate and write fragmentation statistics to a file with a timestamp
 	calculateFragmentationStatistics(timestamp)
+	
 	// Calculate and write DNS resolution delays to a file with a timestamp
 	calculateDNSResolutionDelays(timestamp)
+	
 	// Calculate and write error message counts to a file with a timestamp
 	calculateErrorMessageCounts(timestamp)
+	
 	// Analyze the results and write the summary
 	analyzeResults(timestamp)
 
@@ -228,22 +269,52 @@ func main() {
 	fmt.Scanln() // Wait for the user to press 'Enter'
 }
 
+
+// generateIdentifier creates a unique identifier for a TCP connection based on the source and destination IP addresses.
+// This identifier is used to uniquely identify a connection in the analysis.
+//
+// Parameters:
+// - srcIP: The source IP address of the connection.
+// - dstIP: The destination IP address of the connection.
+//
+// Returns:
+// A string in the format "srcIP_dstIP" which uniquely identifies the connection.
 func generateIdentifier(srcIP, dstIP string) string {
 	return fmt.Sprintf("%s_%s", srcIP, dstIP)
 }
 
-func isValidIPPair(identifier string) bool {
-	parts := strings.Split(identifier, "_")
-	if len(parts) != 2 {
-		return false
-	}
-	return isValidIP(parts[0]) && isValidIP(parts[1])
+
+// generateIdentifier creates a unique identifier for a TCP connection based on the source and destination IP addresses.
+// This identifier is used to uniquely identify a connection in the analysis.
+//
+// Parameters:
+// - srcIP: The source IP address of the connection.
+// - dstIP: The destination IP address of the connection.
+//
+// Returns:
+// A string in the format "srcIP_dstIP" which uniquely identifies the connection.
+func generateIdentifier(srcIP, dstIP string) string {
+	return fmt.Sprintf("%s_%s", srcIP, dstIP)
 }
 
+
+// isValidIP checks if the given string is a valid IP address.
+//
+// Parameters:
+// - ip: The string to check.
+//
+// Returns:
+// A boolean value indicating whether the string is a valid IP address.
 func isValidIP(ip string) bool {
 	return net.ParseIP(ip) != nil
 }
 
+
+// handlePcapTrns processes the given PCAP file for transaction analysis.
+// It opens the PCAP file, reads the packets, and processes each packet for various metrics.
+//
+// Parameters:
+// - filePath: The path to the PCAP file to process.
 func handlePcapTrns(filePath string) {
 	fmt.Println("Starting transaction analysis...")
 	handle, err := pcap.OpenOffline(filePath)
@@ -261,6 +332,12 @@ func handlePcapTrns(filePath string) {
 	fmt.Println("Completed transaction analysis.")
 }
 
+
+// processPacket processes an individual packet for TCP connection data.
+// It updates the retransmission count for the connection based on sequence numbers.
+//
+// Parameters:
+// - packet: The packet to process.
 func processPacket(packet gopacket.Packet) {
 	tcpLayer := packet.Layer(layers.LayerTypeTCP)
 	if tcpLayer != nil {
@@ -288,6 +365,13 @@ func processPacket(packet gopacket.Packet) {
 	}
 }
 
+
+// writeRetransmissionTable writes the retransmission data to a file with a timestamp.
+// It creates a new file named "retransmissions_<timestamp>.txt" and writes the TCP connections
+// with their retransmission counts in a tabular format.
+//
+// Parameters:
+// - timestamp: A string representing the current timestamp to be included in the filename.
 func writeRetransmissionTable(timestamp string) {
 	fmt.Println("Writing retransmission table...")
 	filePath := fmt.Sprintf("retransmissions_%s.txt", timestamp)
@@ -298,6 +382,7 @@ func writeRetransmissionTable(timestamp string) {
 	}
 	defer file.Close()
 
+	// connectionInfo stores the details of each TCP connection including retransmissions
 	type connectionInfo struct {
 		identifier string
 		srcPort    layers.TCPPort
@@ -305,6 +390,7 @@ func writeRetransmissionTable(timestamp string) {
 		retrans    int
 	}
 
+	// connections stores all the TCP connections with retransmissions
 	var connections []connectionInfo
 	for identifier, data := range tcpConnections {
 		if data.retransmissions > 0 {
@@ -317,10 +403,12 @@ func writeRetransmissionTable(timestamp string) {
 		}
 	}
 
+	// Sort connections by retransmission count in descending order
 	sort.Slice(connections, func(i, j int) bool {
 		return connections[i].retrans > connections[j].retrans
 	})
 
+	// Write the retransmission data to the file
 	fmt.Fprintln(file, "Source_Destination\tSource Port\tDestination Port\tRetransmissions")
 	for _, conn := range connections {
 		fmt.Fprintf(file, "%s\t%d\t\t%d\t\t\t%d\n", conn.identifier, conn.srcPort, conn.dstPort, conn.retrans)
@@ -328,6 +416,11 @@ func writeRetransmissionTable(timestamp string) {
 	fmt.Println("Retransmission table written.")
 }
 
+// handlePcapLat processes a PCAP file to analyze latency, handshake failures, and connection breaks.
+// It reads the file, processes each packet, and calls specific functions to handle different aspects of the analysis.
+//
+// Parameters:
+// - filePath: The path to the PCAP file to be processed.
 func handlePcapLat(filePath string) {
 	fmt.Println("Starting latency analysis...")
 	handle, err := pcap.OpenOffline(filePath)
@@ -345,6 +438,12 @@ func handlePcapLat(filePath string) {
 	fmt.Println("Completed latency analysis.")
 }
 
+
+// processPacketLat processes individual packets to analyze latency and categorize them.
+// It handles different types of packets (UDP, ICMP, TCP) and extracts relevant information.
+//
+// Parameters:
+// - packet: The packet to be processed.
 func processPacketLat(packet gopacket.Packet) {
 	ipLayer := packet.Layer(layers.LayerTypeIPv4)
 	if ipLayer == nil {
@@ -460,7 +559,16 @@ func processPacketLat(packet gopacket.Packet) {
 		}
 	}
 }
+}
 
+// getICMPTypeString returns a string representation of the ICMP type based on the provided ICMPv4TypeCode.
+// It translates common ICMP types into human-readable strings for logging and reporting purposes.
+//
+// Parameters:
+// - typeCode: The ICMPv4TypeCode representing the type and code of the ICMP message.
+//
+// Returns:
+// - A string describing the ICMP type and code.
 func getICMPTypeString(typeCode layers.ICMPv4TypeCode) string {
 	switch typeCode.Type() {
 	case layers.ICMPv4TypeDestinationUnreachable:
@@ -482,6 +590,12 @@ func getICMPTypeString(typeCode layers.ICMPv4TypeCode) string {
 	}
 }
 
+
+// categorizeLatency categorizes the given latency into predefined buckets and updates the latency categories map.
+//
+// Parameters:
+// - identifier: A unique identifier for the connection (usually a combination of source and destination IPs).
+// - latency: The latency duration to be categorized.
 func categorizeLatency(identifier string, latency time.Duration) {
 	category, exists := latencyCategories[identifier]
 	if !exists {
@@ -499,6 +613,12 @@ func categorizeLatency(identifier string, latency time.Duration) {
 	}
 }
 
+
+// writeLatencyPercentages calculates and writes latency percentages to a file.
+// It processes the categorized latency data, calculates the percentages for each category, and writes the results to a file.
+//
+// Parameters:
+// - timestamp: A string representing the current timestamp to uniquely name the output file.
 func writeLatencyPercentages(timestamp string) {
 	fmt.Println("Writing latency percentages...")
 	filePath := fmt.Sprintf("latency_percentages_%s.txt", timestamp)
@@ -526,12 +646,12 @@ func writeLatencyPercentages(timestamp string) {
 			percentages = append(percentages, latencyPercentage{
 				identifier: identifier,
 				category:   "60ms-100ms",
-				percentage: float64(category.between60And100ms) / float64(category.total) * 100,
+				percentage: float64(category.between60And100ms) / float.float64(category.total) * 100,
 			})
 			percentages = append(percentages, latencyPercentage{
 				identifier: identifier,
 				category:   ">100ms",
-				percentage: float64(category.above100ms) / float64(category.total) * 100,
+				percentage: float.float64(category.above100ms) / float.float64(category.total) * 100,
 			})
 		}
 	}
@@ -539,9 +659,9 @@ func writeLatencyPercentages(timestamp string) {
 	// Sort the percentages as specified
 	// Define the order of categories
 	categoryOrder := map[string]int{
-		">>>>>100ms": 0,
+		">100ms": 0,
 		"60ms-100ms": 1,
-		"<<<<<<60ms": 2,
+		"<60ms": 2,
 	}
 
 	sort.Slice(percentages, func(i, j int) bool {
@@ -571,6 +691,12 @@ func writeLatencyPercentages(timestamp string) {
 	fmt.Println("Latency percentages written.")
 }
 
+
+// writeHandshakeFailuresAndConnectionBreaks writes handshake failures and connection breaks to a file.
+// It processes the collected handshake failures and connection breaks, sorts them, and writes the results to a file.
+//
+// Parameters:
+// - timestamp: A string representing the current timestamp to uniquely name the output file.
 func writeHandshakeFailuresAndConnectionBreaks(timestamp string) {
 	fmt.Println("Writing handshake failures and connection breaks...")
 	filePath := fmt.Sprintf("handshake_failures_and_connection_breaks_%s.txt", timestamp)
@@ -591,6 +717,7 @@ func writeHandshakeFailuresAndConnectionBreaks(timestamp string) {
 		count      int
 	}
 
+	// Collect and sort handshake failures
 	var handshakeFailuresList []handshakeFailureInfo
 	for identifier, count := range handshakeFailures {
 		handshakeFailuresList = append(handshakeFailuresList, handshakeFailureInfo{
@@ -602,6 +729,7 @@ func writeHandshakeFailuresAndConnectionBreaks(timestamp string) {
 		return handshakeFailuresList[i].count > handshakeFailuresList[j].count
 	})
 
+	// Collect and sort connection breaks
 	var connectionBreaksList []connectionBreakInfo
 	for identifier, count := range connectionBreaks {
 		connectionBreaksList = append(connectionBreaksList, connectionBreakInfo{
@@ -613,11 +741,13 @@ func writeHandshakeFailuresAndConnectionBreaks(timestamp string) {
 		return connectionBreaksList[i].count > connectionBreaksList[j].count
 	})
 
+	// Write handshake failures to the file
 	fmt.Fprintln(file, "Handshake Failures")
 	for _, failure := range handshakeFailuresList {
 		fmt.Fprintf(file, "Handshake failure between %s %d failures\n", failure.identifier, failure.count)
 	}
 
+	// Write connection breaks to the file
 	fmt.Fprintln(file, "\nConnection Breaks")
 	for _, breakInfo := range connectionBreaksList {
 		fmt.Fprintf(file, "Connection break between %s %d breaks\n", breakInfo.identifier, breakInfo.count)
@@ -625,6 +755,12 @@ func writeHandshakeFailuresAndConnectionBreaks(timestamp string) {
 	fmt.Println("Handshake failures and connection breaks written.")
 }
 
+
+// detectHandshakeFailuresAndConnectionBreaks detects and logs handshake failures and connection breaks from TCP packets.
+// It analyzes the TCP flags to identify failed handshakes and broken connections, updating the relevant counters.
+//
+// Parameters:
+// - packet: The packet to analyze.
 func detectHandshakeFailuresAndConnectionBreaks(packet gopacket.Packet) {
 	tcpLayer := packet.Layer(layers.LayerTypeTCP)
 	if tcpLayer == nil {
@@ -638,15 +774,18 @@ func detectHandshakeFailuresAndConnectionBreaks(packet gopacket.Packet) {
 	}
 	ip, _ := ipLayer.(*layers.IPv4)
 
+	// Ignore packets with both source and destination ports > 1023
 	if tcp.SrcPort > 1023 && tcp.DstPort > 1023 {
 		return
 	}
 
 	identifier := generateIdentifier(ip.SrcIP.String(), ip.DstIP.String())
 
+	// Detect SYN packets (start of a handshake)
 	if tcp.SYN && !tcp.ACK {
 		sessions[identifier] = append(sessions[identifier], packetDetail{timestamp: packet.Metadata().Timestamp, seqNum: tcp.Seq})
 	} else if tcp.SYN && tcp.ACK {
+		// Detect SYN-ACK packets (response in a handshake)
 		if details, found := sessions[identifier]; found {
 			for _, detail := range details {
 				if detail.seqNum == tcp.Seq-1 {
@@ -656,10 +795,16 @@ func detectHandshakeFailuresAndConnectionBreaks(packet gopacket.Packet) {
 		}
 		handshakeFailures[identifier]++
 	} else if tcp.RST || tcp.FIN {
+		// Detect connection breaks (RST or FIN packets)
 		connectionBreaks[identifier]++
 	}
 }
 
+// processRTT processes Round Trip Time (RTT) information from a given packet.
+// It extracts the relevant details from the packet, calculates the RTT for TCP handshakes, and logs the RTT data.
+//
+// Parameters:
+// - packet: The packet to analyze.
 func processRTT(packet gopacket.Packet) {
 	tcpLayer := packet.Layer(layers.LayerTypeTCP)
 	if tcpLayer == nil {
@@ -683,9 +828,11 @@ func processRTT(packet gopacket.Packet) {
 		dstPort:   tcp.DstPort,
 	}
 
+	// Handle SYN packets (start of a handshake)
 	if tcp.SYN && !tcp.ACK {
 		sessions[identifier] = append(sessions[identifier], detail)
 	} else if tcp.SYN && tcp.ACK {
+		// Handle SYN-ACK packets (response in a handshake)
 		if requests, found := sessions[identifier]; found {
 			for _, req := range requests {
 				if req.seqNum == tcp.Ack-1 {
@@ -700,6 +847,7 @@ func processRTT(packet gopacket.Packet) {
 			}
 		}
 	} else {
+		// Handle other packets to measure RTT
 		reverseIdentifier := generateIdentifier(ip.DstIP.String(), ip.SrcIP.String())
 		if requests, found := sessions[reverseIdentifier]; found {
 			for _, req := range requests {
@@ -717,6 +865,11 @@ func processRTT(packet gopacket.Packet) {
 	}
 }
 
+// writeRTTData writes the collected RTT data to a file.
+// It sorts the RTT data in descending order and writes the results to a file.
+//
+// Parameters:
+// - timestamp: A string representing the current timestamp to uniquely name the output file.
 func writeRTTData(timestamp string) {
 	fmt.Println("Writing RTT data...")
 	filePath := fmt.Sprintf("rtt_data_%s.txt", timestamp)
@@ -727,10 +880,12 @@ func writeRTTData(timestamp string) {
 	}
 	defer file.Close()
 
+	// Sort RTT data in descending order
 	sort.Slice(rttData, func(i, j int) bool {
 		return rttData[i].rtt > rttData[j].rtt
 	})
 
+	// Write RTT data to the file
 	fmt.Fprintln(file, "Source_Destination\tRTT")
 	for _, data := range rttData {
 		identifier := generateIdentifier(data.srcIP, data.dstIP)
@@ -739,6 +894,12 @@ func writeRTTData(timestamp string) {
 	fmt.Println("RTT data written.")
 }
 
+
+// calculateJitter calculates the average jitter for each connection and writes the results to a file.
+// It processes packet data to compute the inter-arrival time jitter and stores the results.
+//
+// Parameters:
+// - timestamp: A string representing the current timestamp to uniquely name the output file.
 func calculateJitter(timestamp string) {
 	fmt.Println("Calculating jitter...")
 	filePath := fmt.Sprintf("jitter_%s.txt", timestamp)
@@ -788,6 +949,12 @@ func calculateJitter(timestamp string) {
 	fmt.Println("Jitter calculation completed.")
 }
 
+
+// calculateThroughput calculates the throughput for each connection and writes the results to a file.
+// It processes packet data to compute the throughput in bytes per second and stores the results.
+//
+// Parameters:
+// - timestamp: A string representing the current timestamp to uniquely name the output file.
 func calculateThroughput(timestamp string) {
 	fmt.Println("Calculating throughput...")
 	filePath := fmt.Sprintf("throughput_%s.txt", timestamp)
@@ -837,6 +1004,12 @@ func calculateThroughput(timestamp string) {
 	fmt.Println("Throughput calculation completed.")
 }
 
+
+// calculateDuplicateAcks calculates the number of duplicate ACKs for each connection and writes the results to a file.
+// It processes packet data to count duplicate acknowledgments and stores the results.
+//
+// Parameters:
+// - timestamp: A string representing the current timestamp to uniquely name the output file.
 func calculateDuplicateAcks(timestamp string) {
 	fmt.Println("Calculating duplicate ACKs...")
 	filePath := fmt.Sprintf("duplicate_acks_%s.txt", timestamp)
@@ -885,6 +1058,12 @@ func calculateDuplicateAcks(timestamp string) {
 	fmt.Println("Duplicate ACK calculation completed.")
 }
 
+
+// calculateWindowSizeStatistics calculates window size statistics for each connection and writes the results to a file.
+// It processes packet data to compute the minimum, maximum, and average window sizes, as well as the delta and delta percentage.
+//
+// Parameters:
+// - timestamp: A string representing the current timestamp to uniquely name the output file.
 func calculateWindowSizeStatistics(timestamp string) {
 	fmt.Println("Calculating window size statistics...")
 	filePath := fmt.Sprintf("window_size_%s.txt", timestamp)
@@ -945,6 +1124,11 @@ func calculateWindowSizeStatistics(timestamp string) {
 	fmt.Println("Window size statistics calculation completed.")
 }
 
+// calculateFragmentationStatistics calculates the number of fragmented packets for each connection
+// and writes the results to a file. It processes packet data to count fragments and stores the results.
+//
+// Parameters:
+// - timestamp: A string representing the current timestamp to uniquely name the output file.
 func calculateFragmentationStatistics(timestamp string) {
 	fmt.Println("Calculating fragmentation statistics...")
 	filePath := fmt.Sprintf("fragmentation_%s.txt", timestamp)
@@ -994,6 +1178,12 @@ func calculateFragmentationStatistics(timestamp string) {
 	fmt.Println("Fragmentation statistics calculation completed.")
 }
 
+
+// calculateDNSResolutionDelays calculates the DNS resolution delays for each query and writes the results to a file.
+// It processes DNS query and response data to calculate the delay between them and stores the results.
+//
+// Parameters:
+// - timestamp: A string representing the current timestamp to uniquely name the output file.
 func calculateDNSResolutionDelays(timestamp string) {
 	fmt.Println("Calculating DNS resolution delays...")
 	filePath := fmt.Sprintf("dns_resolution_delays_%s.txt", timestamp)
@@ -1018,6 +1208,12 @@ func calculateDNSResolutionDelays(timestamp string) {
 	fmt.Println("DNS resolution delays calculation completed.")
 }
 
+
+// calculateErrorMessageCounts calculates the count of different error messages for each connection
+// and writes the results to a file. It filters out non-error messages such as Echo Request and Echo Reply.
+//
+// Parameters:
+// - timestamp: A string representing the current timestamp to uniquely name the output file.
 func calculateErrorMessageCounts(timestamp string) {
 	fmt.Println("Calculating error message counts...")
 	filePath := fmt.Sprintf("error_message_counts_%s.txt", timestamp)
@@ -1063,6 +1259,12 @@ func calculateErrorMessageCounts(timestamp string) {
 	fmt.Println("Error message counts calculation completed.")
 }
 
+
+// analyzeFile reads a file and analyzes the suspect scores for each connection based on the content.
+// It increments the suspect score for each identifier found in the file.
+//
+// Parameters:
+// - filePath: The path to the file to be analyzed.
 func analyzeFile(filePath string) {
 	file, err := os.Open(filePath)
 	if err != nil {
@@ -1088,8 +1290,15 @@ func analyzeFile(filePath string) {
 	}
 }
 
+
+// calculateSuspectScores processes multiple files to calculate suspect scores for various network metrics.
+// It reads each file, extracts relevant metrics, and updates suspect scores and their contributions.
+//
+// Parameters:
+// - filePaths: A slice of strings containing the paths to the files to be processed.
 func calculateSuspectScores(filePaths []string) {
 	log.Println("Starting to calculate suspect scores...")
+
 	for _, filePath := range filePaths {
 		log.Printf("Processing file: %s", filePath)
 		file, err := os.Open(filePath)
@@ -1133,7 +1342,7 @@ func calculateSuspectScores(filePaths []string) {
 					}
 				}
 
-				// Process other metrics (similar to how jitter is processed)
+				// Process duplicate ACKs
 				if strings.Contains(filePath, "duplicate_acks") {
 					dupAcks, err := strconv.Atoi(parts[2])
 					if err != nil {
@@ -1148,6 +1357,7 @@ func calculateSuspectScores(filePaths []string) {
 					}
 				}
 
+				// Process error messages
 				if strings.Contains(filePath, "error_message_counts") {
 					errorCount, err := strconv.Atoi(parts[2])
 					if err != nil {
@@ -1160,6 +1370,7 @@ func calculateSuspectScores(filePaths []string) {
 					log.Printf("Error messages processed for %s: %d", identifier, errorCount)
 				}
 
+				// Process handshake failures and connection breaks
 				if strings.Contains(filePath, "handshake_failures_and_connection_breaks") {
 					handshakeFailures, err := strconv.Atoi(parts[1])
 					if err != nil {
@@ -1178,6 +1389,7 @@ func calculateSuspectScores(filePaths []string) {
 					log.Printf("Handshake failures and connection breaks processed for %s: %d", identifier, handshakeFailures+connectionBreaks)
 				}
 
+				// Process latency percentages
 				if strings.Contains(filePath, "latency_percentages") {
 					percentageStr := strings.TrimSuffix(parts[2], "%")
 					percentage, err := strconv.ParseFloat(percentageStr, 64)
@@ -1193,6 +1405,7 @@ func calculateSuspectScores(filePaths []string) {
 					}
 				}
 
+				// Process retransmissions
 				if strings.Contains(filePath, "retransmissions") {
 					retransmissions, err := strconv.Atoi(parts[3])
 					if err != nil {
@@ -1205,6 +1418,7 @@ func calculateSuspectScores(filePaths []string) {
 					log.Printf("Retransmissions processed for %s: %d", identifier, retransmissions)
 				}
 
+				// Process RTT data
 				if strings.Contains(filePath, "rtt_data") {
 					rtt, err := time.ParseDuration(parts[1])
 					if err != nil {
@@ -1220,6 +1434,7 @@ func calculateSuspectScores(filePaths []string) {
 					}
 				}
 
+				// Process fragmentation
 				if strings.Contains(filePath, "fragmentation") {
 					fragmentCount, err := strconv.Atoi(parts[3])
 					if err != nil {
@@ -1232,6 +1447,7 @@ func calculateSuspectScores(filePaths []string) {
 					log.Printf("Fragmentation processed for %s: %d", identifier, fragmentCount)
 				}
 
+				// Process DNS resolution delays
 				if strings.Contains(filePath, "dns_resolution_delays") {
 					delay, err := time.ParseDuration(parts[4])
 					if err != nil {
@@ -1256,12 +1472,6 @@ func calculateSuspectScores(filePaths []string) {
 	log.Println("Finished calculating suspect scores.")
 }
 
-func updateSuspectScore(identifier string, delta int) {
-	if _, exists := suspectScores[identifier]; !exists {
-		suspectScores[identifier] = 0
-	}
-	suspectScores[identifier] += delta
-}
 
 func writeSummary(filePath string, timestamp string) {
 	log.Println("Starting to write summary...")
