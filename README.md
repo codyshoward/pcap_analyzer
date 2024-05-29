@@ -8,6 +8,8 @@ How to use.
 3. Open the zipped folder created in the same directory as the pcap_analyzer.exe.
 4. Review the Analysis_summary first, then review all other data as needed. 
 
+Contact: Codyshoward@gmail.com
+
 Features
 Analyzes PCAP files for various network metrics including retransmissions, latency, handshake failures, connection breaks, RTT, jitter, throughput, duplicate ACKs, window sizes, fragmentation, DNS resolution delays, and error message counts.
 Generates detailed analysis reports with suspect scores and raw metrics.
