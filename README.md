@@ -2,6 +2,12 @@ PCAP Analyzer
 Overview
 This package provides a comprehensive tool for analyzing PCAP files, extracting various network metrics, and summarizing the results in a detailed analysis report. The tool also supports zipping the generated analysis files and deleting the original files after they are added to the zip.
 
+How to use. 
+1. Download the pcap_analyzer.exe
+2. Run the pcap_analyzer.exe and select a pcap file.
+3. Open the zipped folder created in the same directory as the pcap_analyzer.exe.
+4. Review the Analysis_summary first, then review all other data as needed. 
+
 Features
 Analyzes PCAP files for various network metrics including retransmissions, latency, handshake failures, connection breaks, RTT, jitter, throughput, duplicate ACKs, window sizes, fragmentation, DNS resolution delays, and error message counts.
 Generates detailed analysis reports with suspect scores and raw metrics.
