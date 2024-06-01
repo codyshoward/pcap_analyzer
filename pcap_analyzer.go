@@ -52,6 +52,7 @@ type packetDetail struct {
 	moreFragments    bool
 	srcPort          layers.TCPPort
 	dstPort          layers.TCPPort
+	ttl              uint8
 }
 
 // tcpSessionKey represents a unique TCP session based on source and destination IPs and ports.
@@ -176,6 +177,35 @@ type fragmentationInfo struct {
 	fragmentCount int
 }
 
+type Communication struct {
+	SrcMAC string
+	DstMAC string
+	SrcIP  string
+	DstIP  string
+}
+
+// pathChangeDetector analyzes TTL values and detects out-of-order packets.
+type pathChangeDetector struct {
+	previousTTL     uint8
+	outOfOrderCount int
+	previousSeqNum  uint32
+}
+
+// detector holds the state for detecting various anomalies.
+type detector struct {
+	previousTTL         uint8
+	outOfOrderCount     int
+	previousSeqNum      uint32
+	previousVLAN        uint16
+	arpTable            map[string]string
+	icmpRedirects       int
+	routingChanges      int
+	vlanChanges         int
+	macAddressIssues    int
+	multicastChanges    int
+	httpHeaderAnomalies int
+}
+
 // Global variables to hold various metrics and data.
 var dnsQueries = make(map[uint16]dnsQuery)
 var dnsDelays = []dnsDelayInfo{}
@@ -195,7 +225,7 @@ var fragmentationData = []fragmentationInfo{}
 var suspectScores = make(map[string]int)
 var metricContributions = make(map[string]map[string]int)
 var rawMetrics = make(map[string]map[string]interface{})
-
+var communications []Communication
 
 // main is the entry point of the application. It sets up logging, opens a file selection dialog,
 // processes the selected PCAP file, writes various analysis results to files, and generates a summary report.
@@ -222,54 +252,94 @@ func main() {
 	log.Printf("Analyzing the selected pcap file: %s\n", selectedFile)
 	timestamp := time.Now().Format("20060102_150405")
 
+	// Initialize detector for additional analyses
+	det := &detector{
+		arpTable: make(map[string]string),
+	}
+
 	// Process the selected PCAP file for transactions
-	handlePcapTrns(selectedFile)
-	
+	handlePcapTrns(selectedFile, det)
+
 	// Process the selected PCAP file for latency
 	handlePcapLat(selectedFile)
 
 	// Write retransmission data to a file with a timestamp
 	writeRetransmissionTable(timestamp)
-	
+
 	// Write latency percentages to a file with a timestamp
 	writeLatencyPercentages(timestamp)
-	
+
 	// Write handshake failures and connection breaks to a file
 	writeHandshakeFailuresAndConnectionBreaks(timestamp)
-	
+
 	// Write RTT data to a file with a timestamp
 	writeRTTData(timestamp)
-	
+
 	// Calculate and write jitter to a file with a timestamp
 	calculateJitter(timestamp)
-	
+
 	// Calculate and write throughput to a file with a timestamp
 	calculateThroughput(timestamp)
-	
+
 	// Calculate and write duplicate ACKs to a file with a timestamp
 	calculateDuplicateAcks(timestamp)
-	
+
 	// Calculate and write window size statistics to a file with a timestamp
 	calculateWindowSizeStatistics(timestamp)
-	
+
 	// Calculate and write fragmentation statistics to a file with a timestamp
 	calculateFragmentationStatistics(timestamp)
-	
+
 	// Calculate and write DNS resolution delays to a file with a timestamp
 	calculateDNSResolutionDelays(timestamp)
-	
+
 	// Calculate and write error message counts to a file with a timestamp
 	calculateErrorMessageCounts(timestamp)
-	
-	// Analyze the results and write the summary
+
+	// Write the indexed Layer 3 communications with Layer 2 MAC addresses
+	writeIndexedCommunications(timestamp)
+
+	// Write detector results to a file
+	writeDetectorResults(det, timestamp)
+
+	// Analyze the results and write the summary MUST GO LAST OR RESULTS WILL NOT BE WRITTEN CORRECTLY
 	analyzeResults(timestamp)
+
+	// Create a zip file containing all the files
+	zipFileName := fmt.Sprintf("analysis_results_%s.zip", timestamp)
+	filesToZip := []string{
+		fmt.Sprintf("retransmissions_%s.txt", timestamp),
+		fmt.Sprintf("latency_percentages_%s.txt", timestamp),
+		fmt.Sprintf("handshake_failures_and_connection_breaks_%s.txt", timestamp),
+		fmt.Sprintf("rtt_data_%s.txt", timestamp),
+		fmt.Sprintf("jitter_%s.txt", timestamp),
+		fmt.Sprintf("throughput_%s.txt", timestamp),
+		fmt.Sprintf("duplicate_acks_%s.txt", timestamp),
+		fmt.Sprintf("window_size_%s.txt", timestamp),
+		fmt.Sprintf("fragmentation_%s.txt", timestamp),
+		fmt.Sprintf("dns_resolution_delays_%s.txt", timestamp),
+		fmt.Sprintf("error_message_counts_%s.txt", timestamp),
+		fmt.Sprintf("indexed_communications_%s.txt", timestamp),
+		fmt.Sprintf("detector_results_%s.txt", timestamp),
+		fmt.Sprintf("analysis_summary_%s.txt", timestamp),
+	}
+
+	err = createZipFile(zipFileName, filesToZip)
+	if err != nil {
+		log.Fatalf("Failed to create zip file: %v", err)
+	}
+
+	// Delete the original files after they have been added to the zip
+	err = deleteFiles(filesToZip)
+	if err != nil {
+		log.Fatalf("Failed to delete original files: %v", err)
+	}
 
 	// Prompt to keep the terminal open
 	log.Println("Press 'Enter' to exit...")
 	fmt.Scanln() // Wait for the user to press 'Enter'
 }
 
-
 // generateIdentifier creates a unique identifier for a TCP connection based on the source and destination IP addresses.
 // This identifier is used to uniquely identify a connection in the analysis.
 //
@@ -282,21 +352,6 @@ func main() {
 func generateIdentifier(srcIP, dstIP string) string {
 	return fmt.Sprintf("%s_%s", srcIP, dstIP)
 }
-
-
-// generateIdentifier creates a unique identifier for a TCP connection based on the source and destination IP addresses.
-// This identifier is used to uniquely identify a connection in the analysis.
-//
-// Parameters:
-// - srcIP: The source IP address of the connection.
-// - dstIP: The destination IP address of the connection.
-//
-// Returns:
-// A string in the format "srcIP_dstIP" which uniquely identifies the connection.
-func generateIdentifier(srcIP, dstIP string) string {
-	return fmt.Sprintf("%s_%s", srcIP, dstIP)
-}
-
 
 // isValidIP checks if the given string is a valid IP address.
 //
@@ -309,13 +364,27 @@ func isValidIP(ip string) bool {
 	return net.ParseIP(ip) != nil
 }
 
+// isValidIPPair checks if the given identifier is a valid pair of IP addresses.
+//
+// Parameters:
+// - identifier: The identifier to check, typically in the format "srcIP_dstIP".
+//
+// Returns:
+// A boolean value indicating whether the identifier is a valid pair of IP addresses.
+func isValidIPPair(identifier string) bool {
+	ips := strings.Split(identifier, "_")
+	if len(ips) != 2 {
+		return false
+	}
+	return isValidIP(ips[0]) && isValidIP(ips[1])
+}
 
 // handlePcapTrns processes the given PCAP file for transaction analysis.
 // It opens the PCAP file, reads the packets, and processes each packet for various metrics.
 //
 // Parameters:
 // - filePath: The path to the PCAP file to process.
-func handlePcapTrns(filePath string) {
+func handlePcapTrns(filePath string, det *detector) {
 	fmt.Println("Starting transaction analysis...")
 	handle, err := pcap.OpenOffline(filePath)
 	if err != nil {
@@ -325,20 +394,148 @@ func handlePcapTrns(filePath string) {
 
 	packetSource := gopacket.NewPacketSource(handle, handle.LinkType())
 	for packet := range packetSource.Packets() {
-		processPacket(packet)
+		processPacket(packet, det)
 		detectHandshakeFailuresAndConnectionBreaks(packet)
 		processRTT(packet)
 	}
 	fmt.Println("Completed transaction analysis.")
 }
 
+func processIPPacket(packet gopacket.Packet, ip *layers.IPv4, eth *layers.Ethernet, det *detector) {
+	key := fmt.Sprintf("%s_%s", ip.SrcIP, ip.DstIP)
+
+	if ip.TTL != det.previousTTL {
+		fmt.Printf("TTL change detected for %s: %d -> %d\n", key, det.previousTTL, ip.TTL)
+		det.previousTTL = ip.TTL
+		det.routingChanges++
+	}
+
+	if ip.Protocol == layers.IPProtocolICMPv4 {
+		icmpLayer := packet.Layer(layers.LayerTypeICMPv4)
+		if icmpLayer != nil {
+			icmp, _ := icmpLayer.(*layers.ICMPv4)
+			if icmp.TypeCode.Type() == layers.ICMPv4TypeRedirect {
+				det.icmpRedirects++
+			}
+		}
+	}
+
+	tcpLayer := packet.Layer(layers.LayerTypeTCP)
+	if tcpLayer != nil {
+		tcp, _ := tcpLayer.(*layers.TCP)
+		if tcp.Seq < det.previousSeqNum {
+			det.outOfOrderCount++
+		}
+		det.previousSeqNum = tcp.Seq
+	}
+}
+
+func processARPPacket(arp *layers.ARP, det *detector) {
+	ip := fmt.Sprintf("%v", arp.SourceProtAddress)
+	mac := fmt.Sprintf("%v", arp.SourceHwAddress)
+	if existingMAC, found := det.arpTable[ip]; found && existingMAC != mac {
+		fmt.Printf("ARP spoofing detected for IP %s: %s -> %s\n", ip, existingMAC, mac)
+		det.macAddressIssues++
+	} else {
+		det.arpTable[ip] = mac
+	}
+}
+
+func processVLAN(dot1q *layers.Dot1Q, eth *layers.Ethernet, det *detector) {
+	key := fmt.Sprintf("%s_%s", eth.SrcMAC, eth.DstMAC)
+	if dot1q.VLANIdentifier != det.previousVLAN {
+		fmt.Printf("VLAN change detected for %s: %d -> %d\n", key, det.previousVLAN, dot1q.VLANIdentifier)
+		det.previousVLAN = dot1q.VLANIdentifier
+		det.vlanChanges++
+	}
+}
+
+func processIGMP(igmp *layers.IGMP, det *detector) {
+	if igmp.Type == layers.IGMPMembershipReportV2 || igmp.Type == layers.IGMPLeaveGroup {
+		det.multicastChanges++
+		fmt.Printf("Multicast group change detected: %v\n", igmp.GroupAddress)
+	}
+}
+
+func processHTTP(payload string, det *detector) {
+	headers := strings.Split(payload, "\r\n")
+	for _, header := range headers {
+		if strings.Contains(header, "X-Forwarded-For") {
+			fmt.Printf("HTTP header anomaly detected: %s\n", header)
+			det.httpHeaderAnomalies++
+		}
+	}
+}
 
 // processPacket processes an individual packet for TCP connection data.
 // It updates the retransmission count for the connection based on sequence numbers.
 //
 // Parameters:
 // - packet: The packet to process.
-func processPacket(packet gopacket.Packet) {
+func processPacket(packet gopacket.Packet, det *detector) {
+	var comm Communication
+
+	// Get the Ethernet layer
+	ethernetLayer := packet.Layer(layers.LayerTypeEthernet)
+	var ethernetPacket *layers.Ethernet
+	if ethernetLayer != nil {
+		ethernetPacket, _ = ethernetLayer.(*layers.Ethernet)
+		comm.SrcMAC = ethernetPacket.SrcMAC.String()
+		comm.DstMAC = ethernetPacket.DstMAC.String()
+	}
+
+	// Get the IP layer
+	ipLayer := packet.Layer(layers.LayerTypeIPv4)
+	if ipLayer != nil {
+		ipPacket, _ := ipLayer.(*layers.IPv4)
+		comm.SrcIP = ipPacket.SrcIP.String()
+		comm.DstIP = ipPacket.DstIP.String()
+		processIPPacket(packet, ipPacket, ethernetPacket, det)
+	}
+
+	// Get the IPv6 layer
+	ipv6Layer := packet.Layer(layers.LayerTypeIPv6)
+	if ipv6Layer != nil {
+		ipv6Packet, _ := ipv6Layer.(*layers.IPv6)
+		comm.SrcIP = ipv6Packet.SrcIP.String()
+		comm.DstIP = ipv6Packet.DstIP.String()
+	}
+
+	if comm.SrcMAC != "" && comm.DstMAC != "" && comm.SrcIP != "" && comm.DstIP != "" {
+		communications = append(communications, comm)
+	}
+
+	// Process ARP packets
+	arpLayer := packet.Layer(layers.LayerTypeARP)
+	if arpLayer != nil {
+		arpPacket, _ := arpLayer.(*layers.ARP)
+		processARPPacket(arpPacket, det)
+	}
+
+	// Process VLAN packets
+	dot1qLayer := packet.Layer(layers.LayerTypeDot1Q)
+	if dot1qLayer != nil {
+		dot1qPacket, _ := dot1qLayer.(*layers.Dot1Q)
+		processVLAN(dot1qPacket, ethernetPacket, det)
+	}
+
+	// Process IGMP packets
+	igmpLayer := packet.Layer(layers.LayerTypeIGMP)
+	if igmpLayer != nil {
+		igmpPacket, _ := igmpLayer.(*layers.IGMP)
+		processIGMP(igmpPacket, det)
+	}
+
+	// Process HTTP packets using the application layer payload
+	applicationLayer := packet.ApplicationLayer()
+	if applicationLayer != nil {
+		payload := string(applicationLayer.Payload())
+		if strings.Contains(payload, "HTTP") {
+			processHTTP(payload, det)
+		}
+	}
+
+	// Existing TCP processing logic...
 	tcpLayer := packet.Layer(layers.LayerTypeTCP)
 	if tcpLayer != nil {
 		tcp, _ := tcpLayer.(*layers.TCP)
@@ -364,7 +561,6 @@ func processPacket(packet gopacket.Packet) {
 		}
 	}
 }
-
 
 // writeRetransmissionTable writes the retransmission data to a file with a timestamp.
 // It creates a new file named "retransmissions_<timestamp>.txt" and writes the TCP connections
@@ -438,6 +634,27 @@ func handlePcapLat(filePath string) {
 	fmt.Println("Completed latency analysis.")
 }
 
+// categorizeLatency categorizes the given latency into predefined buckets and updates the latency categories map.
+//
+// Parameters:
+// - identifier: A unique identifier for the connection (usually a combination of source and destination IPs).
+// - latency: The latency duration to be categorized.
+func categorizeLatency(identifier string, latency time.Duration) {
+	category, exists := latencyCategories[identifier]
+	if !exists {
+		category = &latencyCategory{}
+		latencyCategories[identifier] = category
+	}
+	category.total++
+	switch {
+	case latency < 60*time.Millisecond:
+		category.below60ms++
+	case latency >= 60*time.Millisecond && latency < 100*time.Millisecond:
+		category.between60And100ms++
+	default:
+		category.above100ms++
+	}
+}
 
 // processPacketLat processes individual packets to analyze latency and categorize them.
 // It handles different types of packets (UDP, ICMP, TCP) and extracts relevant information.
@@ -559,7 +776,6 @@ func processPacketLat(packet gopacket.Packet) {
 		}
 	}
 }
-}
 
 // getICMPTypeString returns a string representation of the ICMP type based on the provided ICMPv4TypeCode.
 // It translates common ICMP types into human-readable strings for logging and reporting purposes.
@@ -590,35 +806,11 @@ func getICMPTypeString(typeCode layers.ICMPv4TypeCode) string {
 	}
 }
 
-
 // categorizeLatency categorizes the given latency into predefined buckets and updates the latency categories map.
 //
 // Parameters:
 // - identifier: A unique identifier for the connection (usually a combination of source and destination IPs).
 // - latency: The latency duration to be categorized.
-func categorizeLatency(identifier string, latency time.Duration) {
-	category, exists := latencyCategories[identifier]
-	if !exists {
-		category = &latencyCategory{}
-		latencyCategories[identifier] = category
-	}
-	category.total++
-	switch {
-	case latency < 60*time.Millisecond:
-		category.below60ms++
-	case latency >= 60*time.Millisecond && latency < 100*time.Millisecond:
-		category.between60And100ms++
-	default:
-		category.above100ms++
-	}
-}
-
-
-// writeLatencyPercentages calculates and writes latency percentages to a file.
-// It processes the categorized latency data, calculates the percentages for each category, and writes the results to a file.
-//
-// Parameters:
-// - timestamp: A string representing the current timestamp to uniquely name the output file.
 func writeLatencyPercentages(timestamp string) {
 	fmt.Println("Writing latency percentages...")
 	filePath := fmt.Sprintf("latency_percentages_%s.txt", timestamp)
@@ -646,24 +838,24 @@ func writeLatencyPercentages(timestamp string) {
 			percentages = append(percentages, latencyPercentage{
 				identifier: identifier,
 				category:   "60ms-100ms",
-				percentage: float64(category.between60And100ms) / float.float64(category.total) * 100,
+				percentage: float64(category.between60And100ms) / float64(category.total) * 100,
 			})
 			percentages = append(percentages, latencyPercentage{
 				identifier: identifier,
 				category:   ">100ms",
-				percentage: float.float64(category.above100ms) / float.float64(category.total) * 100,
+				percentage: float64(category.above100ms) / float64(category.total) * 100,
 			})
 		}
 	}
 
-	// Sort the percentages as specified
 	// Define the order of categories
 	categoryOrder := map[string]int{
-		">100ms": 0,
+		">100ms":     0,
 		"60ms-100ms": 1,
-		"<60ms": 2,
+		"<60ms":      2,
 	}
 
+	// Sort the percentages as specified
 	sort.Slice(percentages, func(i, j int) bool {
 		if percentages[i].percentage == 0 && percentages[j].percentage != 0 {
 			return false
@@ -690,7 +882,6 @@ func writeLatencyPercentages(timestamp string) {
 	}
 	fmt.Println("Latency percentages written.")
 }
-
 
 // writeHandshakeFailuresAndConnectionBreaks writes handshake failures and connection breaks to a file.
 // It processes the collected handshake failures and connection breaks, sorts them, and writes the results to a file.
@@ -754,7 +945,6 @@ func writeHandshakeFailuresAndConnectionBreaks(timestamp string) {
 	}
 	fmt.Println("Handshake failures and connection breaks written.")
 }
-
 
 // detectHandshakeFailuresAndConnectionBreaks detects and logs handshake failures and connection breaks from TCP packets.
 // It analyzes the TCP flags to identify failed handshakes and broken connections, updating the relevant counters.
@@ -894,7 +1084,6 @@ func writeRTTData(timestamp string) {
 	fmt.Println("RTT data written.")
 }
 
-
 // calculateJitter calculates the average jitter for each connection and writes the results to a file.
 // It processes packet data to compute the inter-arrival time jitter and stores the results.
 //
@@ -948,7 +1137,6 @@ func calculateJitter(timestamp string) {
 	}
 	fmt.Println("Jitter calculation completed.")
 }
-
 
 // calculateThroughput calculates the throughput for each connection and writes the results to a file.
 // It processes packet data to compute the throughput in bytes per second and stores the results.
@@ -1004,7 +1192,6 @@ func calculateThroughput(timestamp string) {
 	fmt.Println("Throughput calculation completed.")
 }
 
-
 // calculateDuplicateAcks calculates the number of duplicate ACKs for each connection and writes the results to a file.
 // It processes packet data to count duplicate acknowledgments and stores the results.
 //
@@ -1057,7 +1244,6 @@ func calculateDuplicateAcks(timestamp string) {
 	}
 	fmt.Println("Duplicate ACK calculation completed.")
 }
-
 
 // calculateWindowSizeStatistics calculates window size statistics for each connection and writes the results to a file.
 // It processes packet data to compute the minimum, maximum, and average window sizes, as well as the delta and delta percentage.
@@ -1178,7 +1364,6 @@ func calculateFragmentationStatistics(timestamp string) {
 	fmt.Println("Fragmentation statistics calculation completed.")
 }
 
-
 // calculateDNSResolutionDelays calculates the DNS resolution delays for each query and writes the results to a file.
 // It processes DNS query and response data to calculate the delay between them and stores the results.
 //
@@ -1207,7 +1392,6 @@ func calculateDNSResolutionDelays(timestamp string) {
 	}
 	fmt.Println("DNS resolution delays calculation completed.")
 }
-
 
 // calculateErrorMessageCounts calculates the count of different error messages for each connection
 // and writes the results to a file. It filters out non-error messages such as Echo Request and Echo Reply.
@@ -1259,7 +1443,6 @@ func calculateErrorMessageCounts(timestamp string) {
 	fmt.Println("Error message counts calculation completed.")
 }
 
-
 // analyzeFile reads a file and analyzes the suspect scores for each connection based on the content.
 // It increments the suspect score for each identifier found in the file.
 //
@@ -1289,7 +1472,6 @@ func analyzeFile(filePath string) {
 		log.Fatalf("Error reading file %s: %v", filePath, err)
 	}
 }
-
 
 // calculateSuspectScores processes multiple files to calculate suspect scores for various network metrics.
 // It reads each file, extracts relevant metrics, and updates suspect scores and their contributions.
@@ -1471,7 +1653,6 @@ func calculateSuspectScores(filePaths []string) {
 	}
 	log.Println("Finished calculating suspect scores.")
 }
-
 
 func writeSummary(filePath string, timestamp string) {
 	log.Println("Starting to write summary...")
@@ -1675,6 +1856,9 @@ func analyzeResults(timestamp string) {
 		fmt.Sprintf("rtt_data_%s.txt", timestamp),
 		fmt.Sprintf("window_size_%s.txt", timestamp),
 		fmt.Sprintf("error_message_counts_%s.txt", timestamp),
+		fmt.Sprintf("throughput_%s.txt", timestamp),             // Ensure throughput is added
+		fmt.Sprintf("indexed_communications_%s.txt", timestamp), // Ensure indexed communications are added
+		fmt.Sprintf("detector_results_%s.txt", timestamp),
 	}
 
 	// Calculate suspect scores
@@ -1710,13 +1894,44 @@ func createZipFile(zipFileName string, files []string) error {
 	defer zipWriter.Close()
 
 	// Add files to the zip
-	for _, file := range files {
-		err := addFileToZip(zipWriter, file)
-		if err != nil {
-			return err
+	for _, filePath := range files {
+		success := false
+		for i := 0; i < 3; i++ {
+			if _, err := os.Stat(filePath); err == nil {
+				err := addFileToZip(zipWriter, filePath)
+				if err != nil {
+					return err
+				}
+				success = true
+				break
+			}
+			log.Printf("File not found, retrying in 5 seconds: %s\n", filePath)
+			time.Sleep(5 * time.Second)
+		}
+		if !success {
+			log.Printf("File not found after 3 attempts, skipping: %s\n", filePath)
 		}
 	}
 
+	// Close the zip writer to ensure all data is written
+	if err := zipWriter.Close(); err != nil {
+		return err
+	}
+
+	return nil
+}
+
+func deleteFiles(files []string) error {
+	for _, filePath := range files {
+		if _, err := os.Stat(filePath); err == nil {
+			err = os.Remove(filePath)
+			if err != nil {
+				return err
+			}
+		} else {
+			log.Printf("File not found, skipping deletion: %s\n", filePath)
+		}
+	}
 	return nil
 }
 
@@ -1754,14 +1969,76 @@ func addFileToZip(zipWriter *zip.Writer, filePath string) error {
 		return err
 	}
 
-	// Close the file before deleting it
-	file.Close()
+	return nil
+}
 
-	// Delete the file after it has been added to the zip
-	err = os.Remove(filePath)
+func writeIndexedCommunications(timestamp string) {
+	fmt.Println("Writing indexed communications...")
+	filePath := fmt.Sprintf("indexed_communications_%s.txt", timestamp)
+
+	file, err := os.Create(filePath)
 	if err != nil {
-		return err
+		log.Fatalf("Failed to create output file: %v", err)
+	}
+	defer file.Close()
+
+	// Map to store unique MAC-IP pairs and count occurrences
+	commMap := make(map[string]map[string]struct{})
+	uniqueCountMap := make(map[string]int)
+
+	// Process communications
+	for _, comm := range communications {
+		srcMACDstMAC := fmt.Sprintf("%s_%s", comm.SrcMAC, comm.DstMAC)
+		srcIPDstIP := fmt.Sprintf("%s_%s", comm.SrcIP, comm.DstIP)
+
+		if _, exists := commMap[srcIPDstIP]; !exists {
+			commMap[srcIPDstIP] = make(map[string]struct{})
+		}
+
+		commMap[srcIPDstIP][srcMACDstMAC] = struct{}{}
+		uniqueCountMap[srcIPDstIP] = len(commMap[srcIPDstIP])
 	}
 
-	return nil
+	// Create a slice of keys and sort by the number of unique MAC addresses in descending order
+	sortedKeys := make([]string, 0, len(uniqueCountMap))
+	for key := range uniqueCountMap {
+		sortedKeys = append(sortedKeys, key)
+	}
+	sort.Slice(sortedKeys, func(i, j int) bool {
+		return uniqueCountMap[sortedKeys[i]] > uniqueCountMap[sortedKeys[j]]
+	})
+
+	// Write header for unique counts
+	fmt.Fprintln(file, "SrcIP_DstIP\t\t\t\tUnique_SrcMac_DstMAC")
+	for _, srcIPDstIP := range sortedKeys {
+		fmt.Fprintf(file, "%s\t\t%d\n", srcIPDstIP, uniqueCountMap[srcIPDstIP])
+	}
+
+	// Write unique combinations
+	fmt.Fprintln(file, "\nUnique Combinations:")
+	for _, srcIPDstIP := range sortedKeys {
+		fmt.Fprintf(file, "IP Pair: %s\n", srcIPDstIP)
+		for srcMACDstMAC := range commMap[srcIPDstIP] {
+			fmt.Fprintf(file, "\t%s\n", srcMACDstMAC)
+		}
+	}
+
+	fmt.Println("Indexed communications written.")
+}
+
+func writeDetectorResults(det *detector, timestamp string) {
+	filePath := fmt.Sprintf("detector_results_%s.txt", timestamp)
+	file, err := os.Create(filePath)
+	if err != nil {
+		log.Fatalf("Failed to create detector results file: %v", err)
+	}
+	defer file.Close()
+
+	fmt.Fprintf(file, "Out-of-order packets: %d\n", det.outOfOrderCount)
+	fmt.Fprintf(file, "ICMP redirects: %d\n", det.icmpRedirects)
+	fmt.Fprintf(file, "Routing changes: %d\n", det.routingChanges)
+	fmt.Fprintf(file, "VLAN changes: %d\n", det.vlanChanges)
+	fmt.Fprintf(file, "MAC address issues: %d\n", det.macAddressIssues)
+	fmt.Fprintf(file, "Multicast changes: %d\n", det.multicastChanges)
+	fmt.Fprintf(file, "HTTP header anomalies: %d\n", det.httpHeaderAnomalies)
 }
